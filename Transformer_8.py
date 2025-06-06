@@ -145,40 +145,52 @@ class Transformer_8(nn.Module):
 
 
     def forward_stage(self, x, index):
-
         B, N, C, H, W = x.shape
         patch_embed = getattr(self, f"patch_embed{index + 1}")
         block = getattr(self, f"block{index + 1}")
         norm = getattr(self, f"norm{index + 1}")
         pool_block = getattr(self, f"pool_block{index + 1}")
         
-        if index<self.num_stages-1:
+        if index < self.num_stages - 1:
             light_block = getattr(self, f"light_block{index + 1}")
         
-        x = x.reshape(-1, x.shape[2], x.shape[3],
-                      x.shape[4])
+        x = x.reshape(-1, x.shape[2], x.shape[3], x.shape[4])
         B1 = x.shape[0]
         
-        
         if self.eval_mode:
+            # Increase batch size and use pinned memory
+            batch_size = min(self.batch_size_encoder * 2, 16)
+            
             if self.use_cuda_eval_mode:
                 patch_embed = patch_embed.cuda()
-            x1 = torch.Tensor()
+                
+            # Pre-allocate output tensor
+            sample_input = x[:1]
+            if self.use_cuda_eval_mode:
+                sample_input = sample_input.cuda()
+            with torch.no_grad():
+                sample_output, H1, W1 = patch_embed(sample_input)
+            if self.use_cuda_eval_mode:
+                sample_output = sample_output.cpu()
+                
+            output_shape = [B1] + list(sample_output.shape[1:])
+            x1 = torch.empty(output_shape, pin_memory=True)
             
             index_batch = 0
-            batch_size = self.batch_size_encoder
-            #pbar = tqdm(total=x.shape[0])
-            while index_batch<x.shape[0]:
-                x2 = x[index_batch:(index_batch+batch_size)]
+            while index_batch < x.shape[0]:
+                end_batch = min(index_batch + batch_size, x.shape[0])
+                x2 = x[index_batch:end_batch]
+                
                 if self.use_cuda_eval_mode:
-                    x2 = x2.cuda()
+                    x2 = x2.cuda(non_blocking=True)
                     
                 x2, H1, W1 = patch_embed(x2)
+                
                 if self.use_cuda_eval_mode:
                     x2 = x2.cpu()
                 
-                x1 = torch.cat((x1, x2), 0)
-                index_batch+=batch_size
+                x1[index_batch:end_batch] = x2
+                index_batch = end_batch
                 
             x = x1
             if self.use_cuda_eval_mode:
@@ -186,9 +198,7 @@ class Transformer_8(nn.Module):
         else:
             x = x.to(next(patch_embed.parameters()).device)
             x, H1, W1 = patch_embed(x)
-            
-            
-        
+
         if self.use_cuda_eval_mode and self.eval_mode:
             x = x.cpu()
             patch_embed = patch_embed.cpu()

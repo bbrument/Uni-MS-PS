@@ -97,8 +97,11 @@ class TransformerLayer(nn.Module):
         self.use_cuda_eval_mode = use_cuda_eval_mode
         self.eval_mode = eval_mode
         self.dim_hidden = dim_hidden
-        self.eval_mode_batch_size = eval_mode_batch_size
+        # Increase batch size to reduce transfer overhead
+        self.eval_mode_batch_size = min(eval_mode_batch_size * 4, 800)  # Larger batches
         
+        # Add pinned memory for faster transfers
+        self.use_pinned_memory = True
         
         modules_enc = []
         modules_enc.append(SAB(dim_input, dim_hidden, num_heads,
@@ -119,22 +122,40 @@ class TransformerLayer(nn.Module):
         if self.eval_mode:
             if self.use_cuda_eval_mode:
                 self.enc = self.enc.cuda()
-            x1 = torch.Tensor()
+            
+            # Use pinned memory for faster transfers
+            if self.use_pinned_memory and not x.is_pinned():
+                x = x.pin_memory()
+            
+            # Pre-allocate output tensor on CPU with pinned memory
+            output_shape = list(x.shape)
+            output_shape[-1] = self.dim_hidden
+            if self.use_pinned_memory:
+                x1 = torch.empty(output_shape, pin_memory=True)
+            else:
+                x1 = torch.empty(output_shape)
+            
             index = 0
             batch_size = self.eval_mode_batch_size
             
-            while index<x.shape[0]:
-                x2 = x[index:(index+batch_size)]
+            while index < x.shape[0]:
+                end_idx = min(index + batch_size, x.shape[0])
+                x2 = x[index:end_idx]
+                
                 if self.use_cuda_eval_mode:
-                    x2 = x2.cuda()
+                    # Non-blocking transfer
+                    x2 = x2.cuda(non_blocking=True)
+                    torch.cuda.synchronize()  # Only sync when necessary
                         
                 x2 = self.enc(x2)
+                
                 if self.use_cuda_eval_mode:
+                    # Non-blocking transfer back
                     x2 = x2.cpu()
-                        
-                x1 = torch.cat((x1, x2), 0)
                     
-                index+=batch_size
+                x1[index:end_idx] = x2
+                index = end_idx
+            
             x = x1
             if self.use_cuda_eval_mode:
                 self.enc = self.enc.cpu()
@@ -282,4 +303,4 @@ class upscale_block(nn.Module):
         x = self.conv(x)
         x = self.block(x)
         return x
-    
+

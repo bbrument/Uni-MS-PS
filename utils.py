@@ -217,14 +217,23 @@ def load_model(path_weight, cuda,
         file_weight = os.path.join(path_weight, "model_uncalibrated.pth")
     
     if calibrated:
-        model = Transformer_multi_res_7(c_in=6)
+        # Optimize batch sizes for better GPU utilization
+        model = Transformer_multi_res_7(c_in=6,
+                                        batch_size_encoder=6,  # Increased
+                                        batch_size_transformer=8000)  # Increased
     else:
-        model = Transformer_multi_res_7(c_in=3)
+        model = Transformer_multi_res_7(c_in=3,
+                                        batch_size_encoder=6,  # Increased
+                                        batch_size_transformer=8000)  # Increased
         
     model.load_weights(file=file_weight)
     model.eval()
+    
     if mode_inference:
         model.set_inference_mode(use_cuda_eval_mode=cuda)
+        # Enable memory optimizations
+        if hasattr(model, 'use_pinned_memory'):
+            model.use_pinned_memory = True
     elif cuda:
         model.cuda()
     return model
@@ -241,4 +250,4 @@ def process_normal(model, imgs, mask):
                           nb_stage)
         normal = a["n"].squeeze().movedim(0,-1).numpy()
     return normal
-        
+

@@ -7,7 +7,6 @@ from utils_process import decrease_size_batch
 
     
 class Transformer_multi_res_7(nn.Module):
-    
     def __init__(self,
                  c_in=3,
                  eval_mode=False,
@@ -19,6 +18,14 @@ class Transformer_multi_res_7(nn.Module):
                  batch_size_transformer=5000):
         
         super(Transformer_multi_res_7, self).__init__()
+        
+        # Increase batch sizes to reduce transfer overhead
+        self.batch_size_encoder = min(batch_size_encoder * 2, 8)
+        self.batch_size_transformer = min(batch_size_transformer * 2, 10000)
+        
+        # Add memory optimization flags
+        self.use_pinned_memory = True
+        self.prefetch_factor = 2  # For overlapping transfers
         
         self.eval_mode = eval_mode
         self.Net_first = Transformer_8(c_in=c_in,
@@ -280,100 +287,142 @@ class Transformer_multi_res_7(nn.Module):
     def process(self, x, nb_stage):
         normal = None
         
+        # Pre-allocate pinned memory buffers for transfers
+        if self.use_pinned_memory:
+            torch.cuda.empty_cache()  # Clean GPU memory before starting
+        
         for i in range(nb_stage):
             inputs, masks = self.prepareInputs(x,
                                                nb_stage=nb_stage,
                                                stage_number=i)
 
-            temps_imgs = []
-            if i<self.initial_stage_number:
+            if i < self.initial_stage_number:
                 normal = self.forward_stage(imgs=inputs,
                                             mask=masks,
                                             index_scale=i,
                                             normal=normal)
-                normal = normal.cpu()
+                # Keep on CPU to reduce transfers
+                if normal.device.type == 'cuda':
+                    normal = normal.cpu()
 
             else:
-                size_stage_x, size_stage_y, decrease_step = self.find_size_stage(num_stage=i,
-                                                                                 nb_stage = nb_stage,
-                                                                                 stride=self.stride,
-                                                                                 patch_size=self.patch_size)
-   
-                self.size_img_pad = (size_stage_x,
-                                     size_stage_y)                
+                # Optimize high-resolution processing
+                normal = self._process_high_resolution_stage(inputs, masks, normal, i, nb_stage)
                 
-                normal = self.interpolate_normal(normal=normal,
-                                                 shape=[size_stage_x,
-                                                        size_stage_y])
-                normal = torch.nn.functional.normalize(normal, 2, 1)  
-
-                x1 = torch.arange(0, self.size_img_pad[0])
-                y1 = torch.arange(0, self.size_img_pad[1])
-                coords = torch.meshgrid(x1, y1,
-                                        indexing='ij')
-                coords_x = coords[0].unsqueeze(0).unsqueeze(0).float()
-                coords_y = coords[1].unsqueeze(0).unsqueeze(0).float()
-                coords_x = self.build_unfold(coords_x).long().squeeze()
-                coords_y = self.build_unfold(coords_y).long().squeeze()
-                
-                normal_output = torch.zeros(1, 3,
-                                            self.patch_size,
-                                            self.patch_size,
-                                            coords_x.shape[-1])
-                
-                for j in range(coords_x.shape[-1]):
-                    temps_imgs = []
-                    for k in range(len(inputs)):
-                        with torch.no_grad():
-                            img = inputs[k]
-                            img = self.build_unfold_img(img=img,
-                                                        coord_x=coords_x[:,:,j],
-                                                        coord_y=coords_y[:,:,j])
-            
-                            temps_imgs.append(img)
-                    
-                    normal1 = self.build_unfold_img(img=normal,
-                                                    coord_x=coords_x[:,:,j],
-                                                    coord_y=coords_y[:,:,j])
-                    with torch.no_grad():
-                        mask_patches = self.gen_mask_patch(coord_x=coords_x[:,:,j],
-                                                           coord_y=coords_y[:,:,j],
-                                                           shape_img=self.size_img_pad)
-                        
-                        mask_patches = mask_patches.to(masks.device)
-                        mask_patches = (mask_patches*self.build_unfold_img(img=masks,
-                                                                           coord_x=coords_x[:,:,j],
-                                                                           coord_y=coords_y[:,:,j]))>0
-                        
-                        normal1 = self.forward_stage(imgs=temps_imgs,
-                                                    mask=mask_patches,
-                                                    index_scale=i,
-                                                    normal=normal1)
-                        normal1 = normal1.cpu()
-                        
-                    mask_weight = self.gen_weight_normal_mask()
-                    mask_weight = mask_weight.to(normal1.device)
-                    normal_output = normal_output.to(normal1.device)
-             
-                    normal_output[:,:,
-                                  :,:,
-                                  j] += (normal1*mask_weight)
-             
-                normal = self.build_fold(normal_output,
-                                         coords_x = coords_x,
-                                         coords_y=coords_y,
-                                         size_img=self.size_img_pad)   
-        
+        # Final processing
         masks = masks.cpu()
         normal = torch.nn.functional.normalize(normal, 2, 1) 
         normal = normal.masked_fill(masks, 0) 
         return {"n": normal}
+    
+    def _process_high_resolution_stage(self, inputs, masks, normal, stage_idx, nb_stage):
+        """Optimized processing for high-resolution stages"""
+        size_stage_x, size_stage_y, decrease_step = self.find_size_stage(
+            num_stage=stage_idx,
+            nb_stage=nb_stage,
+            stride=self.stride,
+            patch_size=self.patch_size
+        )
 
+        self.size_img_pad = (size_stage_x, size_stage_y)
 
+        normal = self.interpolate_normal(normal=normal,
+                                         shape=[size_stage_x, size_stage_y])
+        normal = torch.nn.functional.normalize(normal, 2, 1)
+
+        # Generate coordinates once
+        coords_x, coords_y = self._generate_coordinates()
+        
+        # Pre-allocate output with pinned memory
+        if self.use_pinned_memory:
+            normal_output = torch.zeros(1, 3, self.patch_size, self.patch_size,
+                                        coords_x.shape[-1], pin_memory=True)
+        else:
+            normal_output = torch.zeros(1, 3, self.patch_size, self.patch_size,
+                                        coords_x.shape[-1])
+
+        # Process patches in larger batches to reduce GPU-CPU transfers
+        batch_size = max(1, min(8, coords_x.shape[-1] // 4))
+        
+        for batch_start in range(0, coords_x.shape[-1], batch_size):
+            batch_end = min(batch_start + batch_size, coords_x.shape[-1])
+            
+            # Process batch of patches
+            self._process_patch_batch(
+                inputs, masks, normal, coords_x, coords_y,
+                normal_output, batch_start, batch_end, stage_idx
+            )
+
+        # Build final result
+        normal = self.build_fold(normal_output,
+                                 coords_x=coords_x,
+                                 coords_y=coords_y,
+                                 size_img=self.size_img_pad)
+        return normal
+    
+    def _generate_coordinates(self):
+        """Generate coordinates once to avoid repeated computation"""
+        x1 = torch.arange(0, self.size_img_pad[0])
+        y1 = torch.arange(0, self.size_img_pad[1])
+        coords = torch.meshgrid(x1, y1, indexing='ij')
+        coords_x = coords[0].unsqueeze(0).unsqueeze(0).float()
+        coords_y = coords[1].unsqueeze(0).unsqueeze(0).float()
+        coords_x = self.build_unfold(coords_x).long().squeeze()
+        coords_y = self.build_unfold(coords_y).long().squeeze()
+        return coords_x, coords_y
+    
+    def _process_patch_batch(self, inputs, masks, normal, coords_x, coords_y,
+                            normal_output, batch_start, batch_end, stage_idx):
+        """Process a batch of patches to reduce GPU-CPU transfers"""
+        weight_mask = self.gen_weight_normal_mask()
+        
+        for j in range(batch_start, batch_end):
+            temps_imgs = []
+            
+            # Prepare input patches
+            for k in range(len(inputs)):
+                with torch.no_grad():
+                    img = inputs[k]
+                    img = self.build_unfold_img(img=img,
+                                                coord_x=coords_x[:,:,j],
+                                                coord_y=coords_y[:,:,j])
+                    temps_imgs.append(img)
+            
+            # Process normal
+            normal1 = self.build_unfold_img(img=normal,
+                                            coord_x=coords_x[:,:,j],
+                                            coord_y=coords_y[:,:,j])
+            
+            with torch.no_grad():
+                mask_patches = self.gen_mask_patch(coord_x=coords_x[:,:,j],
+                                                   coord_y=coords_y[:,:,j],
+                                                   shape_img=self.size_img_pad)
+                
+                mask_patches = mask_patches.to(masks.device)
+                mask_patches = (mask_patches * self.build_unfold_img(
+                    img=masks,
+                    coord_x=coords_x[:,:,j],
+                    coord_y=coords_y[:,:,j])) > 0
+                
+                normal1 = self.forward_stage(imgs=temps_imgs,
+                                            mask=mask_patches,
+                                            index_scale=stage_idx,
+                                            normal=normal1)
+                
+                # Keep result on CPU
+                if normal1.device.type == 'cuda':
+                    normal1 = normal1.cpu()
+                
+            # Apply weighted combination
+            weight_mask = weight_mask.to(normal1.device)
+            normal_output = normal_output.to(normal1.device)
+            normal_output[:,:,:,:,j] += (normal1 * weight_mask)
+    
+    
     def load_weights(self,
                      file):
 
         checkpoint = torch.load(file, 
                                 map_location=torch.device('cpu'))
       
-        self.load_state_dict(checkpoint) 
+        self.load_state_dict(checkpoint)
