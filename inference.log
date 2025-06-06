@@ -1,0 +1,33 @@
+2025-06-06 17:30:32,464 - INFO - ============================================================
+2025-06-06 17:30:32,465 - INFO - PHOTOMETRIC STEREO INFERENCE STARTED
+2025-06-06 17:30:32,465 - INFO - ============================================================
+2025-06-06 17:30:32,465 - INFO - Arguments: {'nb_img': 36, 'folder_save': '/home/bbrument/dev/EVAL_DLMV_DTU/EVAL/real_data/os_gourdan/output', 'path_obj': '/home/bbrument/dev/EVAL_DLMV_DTU/EVAL/real_data/os_gourdan//view_23', 'cuda': True, 'calibrated': False, 'verbose': False}
+2025-06-06 17:30:32,465 - INFO - Processing object: view_23
+2025-06-06 17:30:32,465 - INFO - Input path: /home/bbrument/dev/EVAL_DLMV_DTU/EVAL/real_data/os_gourdan//view_23
+2025-06-06 17:30:32,465 - INFO - Output folder: /home/bbrument/dev/EVAL_DLMV_DTU/EVAL/real_data/os_gourdan/output
+2025-06-06 17:30:32,465 - INFO - CUDA enabled: True
+2025-06-06 17:30:32,465 - INFO - Calibrated mode: False
+2025-06-06 17:30:32,465 - INFO - Loading model...
+2025-06-06 17:30:32,466 - INFO - Initializing model...
+2025-06-06 17:30:32,466 - INFO - Using uncalibrated model
+2025-06-06 17:30:34,830 - INFO - Loading weights from: weights/model_uncalibrated.pth
+2025-06-06 17:30:35,878 - INFO - Setting inference mode (CUDA: True)
+2025-06-06 17:30:35,889 - INFO - Model parameters: 79,151,174 total, 79,151,174 trainable
+2025-06-06 17:30:35,890 - INFO - Model loaded successfully in 3.42s
+2025-06-06 17:30:35,890 - INFO - Starting inference...
+2025-06-06 17:30:35,890 - INFO - Starting processing for object: view_23
+2025-06-06 17:30:35,890 - INFO - Stage 1/4: Loading images and mask
+2025-06-06 17:30:35,890 - INFO - Loading images from: /home/bbrument/dev/EVAL_DLMV_DTU/EVAL/real_data/os_gourdan//view_23
+2025-06-06 17:30:35,890 - INFO - Found 36 valid image files
+2025-06-06 17:30:35,891 - INFO - Loading mask file
+2025-06-06 17:30:35,947 - INFO - Mask shape: (1381, 4092, 3)
+2025-06-06 17:30:35,982 - INFO - Number of processing stages: 8
+2025-06-06 17:30:35,982 - INFO - Target image size: 4096x4096
+2025-06-06 17:30:36,168 - INFO - Processing 36 images
+2025-06-06 17:31:45,665 - INFO - Image tensor shape: torch.Size([1, 3, 36, 4096, 4096])
+2025-06-06 17:31:45,667 - INFO - Mask tensor shape: torch.Size([1, 1, 4096, 4096])
+2025-06-06 17:31:45,692 - INFO - Images loaded in 69.80s
+2025-06-06 17:31:45,692 - INFO - Stage 2/4: Estimating normals
+2025-06-06 17:31:45,693 - INFO - Starting normal estimation...
+2025-06-06 17:31:45,693 - INFO - Processing with 8 stages
+2025-06-06 17:31:45,705 - INFO - Starting multi-resolution processing with 8 stages

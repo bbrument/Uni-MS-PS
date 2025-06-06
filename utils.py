@@ -150,6 +150,12 @@ def load_imgs_mask(path,
         mask = np.ones(img_example.shape, 
                        dtype=np.uint8)
     
+    # Check if we need to transpose (portrait to landscape)
+    is_portrait = mask.shape[0] > mask.shape[1]  # height > width
+    if is_portrait:
+        logger.info("Portrait orientation detected, transposing to landscape")
+        mask = np.transpose(mask, (1, 0, 2))  # Transpose height and width
+    
     if max_size is not None:
         if mask.shape[0]>max_size or mask.shape[1]>max_size:
             logger.info(f"Resizing mask to max_size: {max_size}")
@@ -213,6 +219,10 @@ def load_imgs_mask(path,
                                  axis=-1)
             logger.debug(f"Converted single channel image: {file}")
         
+        # Transpose image if we detected portrait orientation
+        if is_portrait:
+            img = np.transpose(img, (1, 0, 2))  # Transpose height and width
+        
         if max_size is not None:
             if img.shape[0]>max_size or img.shape[1]>max_size:
                 img = cv2.resize(img,
@@ -264,7 +274,7 @@ def load_imgs_mask(path,
     logger.info(f"Image tensor shape: {imgs.shape}")
     logger.info(f"Mask tensor shape: {mask.shape}")
     
-    return imgs, mask, padding, [x_min, x_max_pad, y_min, y_max_pad], original_shape
+    return imgs, mask, padding, [x_min, x_max_pad, y_min, y_max_pad], original_shape, is_portrait
 
 
 def load_model(path_weight, cuda,
