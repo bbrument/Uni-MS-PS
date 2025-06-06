@@ -89,6 +89,9 @@ def depadding(img, padding):
 
 def normal_to_rgb(img):
     return (((img+1)/2)*255).astype(np.uint8)
+
+def normal_to_rgb_16bits(img):
+    return (((img+1)/2)*65535).astype(np.uint16)
    
 
 def get_nb_stage(shape):

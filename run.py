@@ -3,7 +3,7 @@ import os
 import torch
 import scipy.io
 import numpy as np
-from utils import depadding, normal_to_rgb
+from utils import depadding, normal_to_rgb, normal_to_rgb_16bits
 from utils import load_imgs_mask, process_normal
 
 
@@ -35,7 +35,7 @@ def run(model, path_obj, nb_img, folder_save, obj_name, calibrated):
                                     normal_resize,
                                     pad_y_max), axis=1)
       
-    normal_resize_rgb = normal_to_rgb(normal_resize)
+    normal_resize_rgb = normal_to_rgb_16bits(normal_resize)
 
     if not os.path.exists(folder_save):
             os.makedirs(folder_save)
