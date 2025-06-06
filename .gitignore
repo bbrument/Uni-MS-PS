@@ -2,3 +2,5 @@ weights/*.pth
 env.yml
 *log
 __pycache__/
+
+run_os.sh
