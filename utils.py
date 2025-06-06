@@ -4,14 +4,11 @@ import os
 import torch
 import cv2
 import logging
+import time  # Add this import
 from tqdm import tqdm
 from Transformer_multi_res_7 import Transformer_multi_res_7
 
 logger = logging.getLogger(__name__)
-
-
-
-
 
 def resize(img, expected_size):
     img = cv2.resize(img,
