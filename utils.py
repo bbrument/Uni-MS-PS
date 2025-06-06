@@ -3,7 +3,12 @@ from PIL import Image
 import os
 import torch
 import cv2
+import logging
+from tqdm import tqdm
 from Transformer_multi_res_7 import Transformer_multi_res_7
+
+logger = logging.getLogger(__name__)
+
 
 
 
@@ -107,6 +112,8 @@ def load_imgs_mask(path,
                    filenames=None,
                    max_size=None):
     
+    logger.info(f"Loading images from: {path}")
+    
     if filenames is None:
         possible_file = os.listdir(path)
     else:
@@ -114,6 +121,7 @@ def load_imgs_mask(path,
 
     temp = []
     
+    # Filter valid image files
     for file in possible_file:
         if ".png" in file and "mask" not in file and "Normal" not in file and "normal" not in file:
             temp.append(file)
@@ -123,15 +131,20 @@ def load_imgs_mask(path,
             temp.append(file)
         elif ".JPG" in file and "mask" not in file and "Normal" not in file and "normal" not in file:
             temp.append(file)
-            
-            
+    
+    logger.info(f"Found {len(temp)} valid image files")
+    
+    # Load mask
     file_mask = os.path.join(path, "mask.png")
     if os.path.exists(file_mask):
+        logger.info("Loading mask file")
         mask = cv2.imread(file_mask)
         # Handle RGBA masks by converting to RGB
         if mask.shape[2] == 4:
             mask = mask[:, :, :3]
+            logger.debug("Converted RGBA mask to RGB")
     else:
+        logger.info("No mask file found, creating default mask")
         file_img_example = os.path.join(path, temp[0])
         img_example = cv2.imread(file_img_example)
         # Handle RGBA example images
@@ -142,10 +155,12 @@ def load_imgs_mask(path,
     
     if max_size is not None:
         if mask.shape[0]>max_size or mask.shape[1]>max_size:
+            logger.info(f"Resizing mask to max_size: {max_size}")
             mask = cv2.resize(mask,
                               (max_size, max_size))
             
     original_shape = mask.shape
+    logger.info(f"Mask shape: {original_shape}")
     
     coord = np.argwhere(mask[:,:,0]>0)
     x_min, x_max = np.min(coord[:,0]), np.max(coord[:,0])
@@ -160,21 +175,26 @@ def load_imgs_mask(path,
     nb_stage = get_nb_stage(mask.shape)
     size_img = 32*2**(nb_stage-1)
     
+    logger.info(f"Number of processing stages: {nb_stage}")
+    logger.info(f"Target image size: {size_img}x{size_img}")
+    
     mask, _ = resize_with_padding(mask,
                                       expected_size=(size_img,
                                                      size_img))
     mask = (mask>0)
     mask = mask[:,:,0]
     
-    
     imgs = []
-            
+    
     if nb_img is None or nb_img>=len(temp) or nb_img==-1:
         files = np.array(temp)
     else:
         files = np.random.choice(temp, nb_img, replace=False)
-        
-    for file in files:
+    
+    logger.info(f"Processing {len(files)} images")
+    
+    # Process images with progress bar
+    for file in tqdm(files, desc="Loading images", unit="img"):
         file1 = os.path.join(path, file)
         img = cv2.imread(file1, 
                          cv2.IMREAD_UNCHANGED)
@@ -185,13 +205,16 @@ def load_imgs_mask(path,
             img = np.expand_dims(img, -1)
             img = np.concatenate((img, img, img),
                                  axis=-1)
+            logger.debug(f"Converted grayscale image: {file}")
         elif len(img.shape)==3 and img.shape[2]==4:
             # RGBA image - remove alpha channel
             img = img[:, :, :3]
+            logger.debug(f"Converted RGBA image: {file}")
         elif len(img.shape)==3 and img.shape[2]==1:
             # Single channel image
             img = np.concatenate((img, img, img),
                                  axis=-1)
+            logger.debug(f"Converted single channel image: {file}")
         
         if max_size is not None:
             if img.shape[0]>max_size or img.shape[1]>max_size:
@@ -204,7 +227,6 @@ def load_imgs_mask(path,
         img, padding = resize_with_padding(img=img,
                                            expected_size=(size_img, size_img))
 
-        
         img = img.astype(np.float32)
         mean_img = np.mean(img, -1)
         mean_img = mean_img.flatten()
@@ -213,7 +235,6 @@ def load_imgs_mask(path,
         
         imgs.append(img)
     
-    
     imgs = np.array(imgs)
     imgs = np.moveaxis(imgs,
                        -1,
@@ -221,6 +242,7 @@ def load_imgs_mask(path,
     imgs = torch.from_numpy(imgs).unsqueeze(0).float()
     
     if calibrated:
+        logger.info("Loading light directions for calibrated mode")
         dirs_file = os.path.join(path,
                                  "light_directions.txt")
         dirs_all = np.loadtxt(dirs_file)
@@ -240,19 +262,27 @@ def load_imgs_mask(path,
     
         imgs = torch.cat([imgs, dirs], 1).float()
     
-    
     mask = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0)
+    
+    logger.info(f"Image tensor shape: {imgs.shape}")
+    logger.info(f"Mask tensor shape: {mask.shape}")
     
     return imgs, mask, padding, [x_min, x_max_pad, y_min, y_max_pad], original_shape
 
 
-
 def load_model(path_weight, cuda,
                calibrated, mode_inference=False): 
+    logger.info("Initializing model...")
+    
     if calibrated:
         file_weight = os.path.join(path_weight, "model_calibrated.pth")
+        logger.info("Using calibrated model")
     else:
         file_weight = os.path.join(path_weight, "model_uncalibrated.pth")
+        logger.info("Using uncalibrated model")
+    
+    if not os.path.exists(file_weight):
+        raise FileNotFoundError(f"Model weights not found at: {file_weight}")
     
     if calibrated:
         # Optimize batch sizes for better GPU utilization
@@ -263,29 +293,48 @@ def load_model(path_weight, cuda,
         model = Transformer_multi_res_7(c_in=3,
                                         batch_size_encoder=6,  # Increased
                                         batch_size_transformer=8000)  # Increased
-        
+    
+    logger.info(f"Loading weights from: {file_weight}")
     model.load_weights(file=file_weight)
     model.eval()
     
     if mode_inference:
+        logger.info(f"Setting inference mode (CUDA: {cuda})")
         model.set_inference_mode(use_cuda_eval_mode=cuda)
         # Enable memory optimizations
         if hasattr(model, 'use_pinned_memory'):
             model.use_pinned_memory = True
+            logger.debug("Enabled pinned memory optimization")
     elif cuda:
+        logger.info("Moving model to CUDA")
         model.cuda()
+    
+    # Log model configuration
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
+    
     return model
 
 
 def process_normal(model, imgs, mask):
+    logger.info("Starting normal estimation...")
+    
     nb_stage = get_nb_stage(mask.shape)
+    logger.info(f"Processing with {nb_stage} stages")
+    
     x = {}
     x["imgs"] = imgs
     x["mask"] = mask
 
+    start_time = time.time()
     with torch.no_grad():
-        a = model.process(x,
-                          nb_stage)
+        a = model.process(x, nb_stage)
         normal = a["n"].squeeze().movedim(0,-1).numpy()
+    
+    process_time = time.time() - start_time
+    logger.info(f"Normal estimation completed in {process_time:.2f}s")
+    logger.info(f"Output normal shape: {normal.shape}")
+    
     return normal
 

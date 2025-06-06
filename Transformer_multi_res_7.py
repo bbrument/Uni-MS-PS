@@ -1,11 +1,14 @@
 import torch.nn as nn
 import torch
 import numpy as np
+import logging
+import time
+from tqdm import tqdm
 from Transformer_8 import Transformer_8
 from utils_process import decrease_size_batch
 
+logger = logging.getLogger(__name__)
 
-    
 class Transformer_multi_res_7(nn.Module):
     def __init__(self,
                  c_in=3,
@@ -285,38 +288,75 @@ class Transformer_multi_res_7(nn.Module):
     
     
     def process(self, x, nb_stage):
+        logger.info(f"Starting multi-resolution processing with {nb_stage} stages")
         normal = None
         
         # Pre-allocate pinned memory buffers for transfers
         if self.use_pinned_memory:
             torch.cuda.empty_cache()  # Clean GPU memory before starting
+            if torch.cuda.is_available():
+                initial_memory = torch.cuda.memory_allocated()
+                logger.debug(f"Initial GPU memory: {initial_memory / 1024**2:.1f}MB")
         
-        for i in range(nb_stage):
-            inputs, masks = self.prepareInputs(x,
-                                               nb_stage=nb_stage,
-                                               stage_number=i)
+        # Process stages with progress bar
+        with tqdm(desc="Processing stages", total=nb_stage, unit="stage") as stage_pbar:
+            for i in range(nb_stage):
+                stage_start_time = time.time()
+                
+                inputs, masks = self.prepareInputs(x,
+                                                   nb_stage=nb_stage,
+                                                   stage_number=i)
 
-            if i < self.initial_stage_number:
-                normal = self.forward_stage(imgs=inputs,
-                                            mask=masks,
-                                            index_scale=i,
-                                            normal=normal)
-                # Keep on CPU to reduce transfers
-                if normal.device.type == 'cuda':
-                    normal = normal.cpu()
+                if i < self.initial_stage_number:
+                    logger.debug(f"Processing initial stage {i+1}/{self.initial_stage_number}")
+                    normal = self.forward_stage(imgs=inputs,
+                                                mask=masks,
+                                                index_scale=i,
+                                                normal=normal)
+                    # Keep on CPU to reduce transfers
+                    if normal.device.type == 'cuda':
+                        normal = normal.cpu()
+                        logger.debug("Moved normal to CPU to save GPU memory")
 
-            else:
-                # Optimize high-resolution processing
-                normal = self._process_high_resolution_stage(inputs, masks, normal, i, nb_stage)
+                else:
+                    logger.debug(f"Processing high-resolution stage {i+1}/{nb_stage}")
+                    # Optimize high-resolution processing
+                    normal = self._process_high_resolution_stage(inputs, masks, normal, i, nb_stage)
+                
+                stage_time = time.time() - stage_start_time
+                
+                # Monitor GPU memory if available
+                if torch.cuda.is_available():
+                    current_memory = torch.cuda.memory_allocated()
+                    max_memory = torch.cuda.max_memory_allocated()
+                    logger.debug(f"Stage {i+1} completed in {stage_time:.2f}s - "
+                               f"GPU memory: {current_memory / 1024**2:.1f}MB "
+                               f"(peak: {max_memory / 1024**2:.1f}MB)")
+                else:
+                    logger.debug(f"Stage {i+1} completed in {stage_time:.2f}s")
+                
+                stage_pbar.update(1)
+                stage_pbar.set_postfix({
+                    'stage': f"{i+1}/{nb_stage}",
+                    'time': f"{stage_time:.1f}s"
+                })
                 
         # Final processing
+        logger.info("Finalizing normal estimation")
         masks = masks.cpu()
         normal = torch.nn.functional.normalize(normal, 2, 1) 
         normal = normal.masked_fill(masks, 0) 
+        
+        if torch.cuda.is_available():
+            final_memory = torch.cuda.memory_allocated()
+            logger.info(f"Final GPU memory usage: {final_memory / 1024**2:.1f}MB")
+        
         return {"n": normal}
     
     def _process_high_resolution_stage(self, inputs, masks, normal, stage_idx, nb_stage):
-        """Optimized processing for high-resolution stages"""
+        """Optimized processing for high-resolution stages with progress tracking"""
+        logger.debug(f"Processing high-resolution stage {stage_idx+1}")
+        
         size_stage_x, size_stage_y, decrease_step = self.find_size_stage(
             num_stage=stage_idx,
             nb_stage=nb_stage,
@@ -325,6 +365,7 @@ class Transformer_multi_res_7(nn.Module):
         )
 
         self.size_img_pad = (size_stage_x, size_stage_y)
+        logger.debug(f"Stage size: {size_stage_x}x{size_stage_y}")
 
         normal = self.interpolate_normal(normal=normal,
                                          shape=[size_stage_x, size_stage_y])
@@ -332,6 +373,8 @@ class Transformer_multi_res_7(nn.Module):
 
         # Generate coordinates once
         coords_x, coords_y = self._generate_coordinates()
+        num_patches = coords_x.shape[-1]
+        logger.debug(f"Processing {num_patches} patches")
         
         # Pre-allocate output with pinned memory
         if self.use_pinned_memory:
@@ -343,15 +386,26 @@ class Transformer_multi_res_7(nn.Module):
 
         # Process patches in larger batches to reduce GPU-CPU transfers
         batch_size = max(1, min(8, coords_x.shape[-1] // 4))
+        num_batches = (num_patches + batch_size - 1) // batch_size
         
-        for batch_start in range(0, coords_x.shape[-1], batch_size):
-            batch_end = min(batch_start + batch_size, coords_x.shape[-1])
+        logger.debug(f"Processing {num_batches} batches of size {batch_size}")
+        
+        with tqdm(desc=f"Stage {stage_idx+1} patches", 
+                  total=num_patches, 
+                  unit="patch",
+                  leave=False) as patch_pbar:
             
-            # Process batch of patches
-            self._process_patch_batch(
-                inputs, masks, normal, coords_x, coords_y,
-                normal_output, batch_start, batch_end, stage_idx
-            )
+            for batch_start in range(0, coords_x.shape[-1], batch_size):
+                batch_end = min(batch_start + batch_size, coords_x.shape[-1])
+                
+                # Process batch of patches
+                self._process_patch_batch(
+                    inputs, masks, normal, coords_x, coords_y,
+                    normal_output, batch_start, batch_end, stage_idx
+                )
+                
+                patches_processed = batch_end - batch_start
+                patch_pbar.update(patches_processed)
 
         # Build final result
         normal = self.build_fold(normal_output,
