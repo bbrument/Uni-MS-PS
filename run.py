@@ -18,9 +18,9 @@ def run(model, path_obj, nb_img, folder_save, obj_name, calibrated):
     logger.info("Stage 1/4: Loading images and mask")
     start_time = time.time()
     
-    imgs, mask, padding, zoom_coord, original_shape = load_imgs_mask(path=path_obj,
-                                                                     nb_img=nb_img,
-                                                                     calibrated=calibrated)
+    imgs, mask, padding, zoom_coord, original_shape, is_portrait = load_imgs_mask(path=path_obj,
+                                                                                  nb_img=nb_img,
+                                                                                  calibrated=calibrated)
     
     load_time = time.time() - start_time
     logger.info(f"Images loaded in {load_time:.2f}s")
@@ -31,7 +31,8 @@ def run(model, path_obj, nb_img, folder_save, obj_name, calibrated):
     
     normal = process_normal(model=model,
                             imgs=imgs,
-                            mask=mask)
+                            mask=mask,
+                            is_portrait=is_portrait)
     
     process_time = time.time() - start_time
     logger.info(f"Normal estimation completed in {process_time:.2f}s")

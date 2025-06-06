@@ -324,7 +324,7 @@ def load_model(path_weight, cuda,
     return model
 
 
-def process_normal(model, imgs, mask):
+def process_normal(model, imgs, mask, is_portrait=False):
     logger.info("Starting normal estimation...")
     
     nb_stage = get_nb_stage(mask.shape)
@@ -338,6 +338,13 @@ def process_normal(model, imgs, mask):
     with torch.no_grad():
         a = model.process(x, nb_stage)
         normal = a["n"].squeeze().movedim(0,-1).numpy()
+    
+    # If original was portrait, transpose the normal map back
+    if is_portrait:
+        logger.info("Transposing normal map back to portrait orientation")
+        normal = np.transpose(normal, (1, 0, 2))
+        # Also need to swap X and Y components of normals
+        normal = normal[:, :, [1, 0, 2]]  # Swap X and Y normal components
     
     process_time = time.time() - start_time
     logger.info(f"Normal estimation completed in {process_time:.2f}s")
