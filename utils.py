@@ -34,20 +34,39 @@ def resize_with_padding(img, expected_size):
                pad_height,
                delta_width - pad_width,
                delta_height - pad_height)
-    img2 = np.zeros((expected_size[0], expected_size[1], 3))
+    
+    # Convert PIL image back to numpy array to get actual dimensions
+    img_array = np.array(img1)
+    
+    # Handle different channel configurations
+    if len(img_array.shape) == 2:
+        # Grayscale image
+        img_channels = 1
+        img2 = np.zeros((expected_size[0], expected_size[1], 3))
+        # Convert grayscale to RGB for consistency
+        img_array = np.stack([img_array] * 3, axis=-1)
+    elif img_array.shape[2] == 4:
+        # RGBA image - remove alpha channel
+        img_channels = 3
+        img_array = img_array[:, :, :3]  # Keep only RGB channels
+        img2 = np.zeros((expected_size[0], expected_size[1], 3))
+    else:
+        # RGB image
+        img_channels = img_array.shape[2]
+        img2 = np.zeros((expected_size[0], expected_size[1], img_channels))
 
     if padding[3]!=0 and padding[2]!=0:
         img2[padding[1]:-padding[3],
-             padding[0]:-padding[2]] = img
+             padding[0]:-padding[2]] = img_array
     elif padding[3]!=0:
         img2[padding[1]:-padding[3],
-             padding[0]:] = img
+             padding[0]:] = img_array
     elif padding[2]!=0:
         img2[padding[1]:,
-             padding[0]:-padding[2]] = img
+             padding[0]:-padding[2]] = img_array
     else:
         img2[padding[1]:,
-             padding[0]:] = img
+             padding[0]:] = img_array
     return img2, padding
 
 
@@ -106,9 +125,15 @@ def load_imgs_mask(path,
     file_mask = os.path.join(path, "mask.png")
     if os.path.exists(file_mask):
         mask = cv2.imread(file_mask)
+        # Handle RGBA masks by converting to RGB
+        if mask.shape[2] == 4:
+            mask = mask[:, :, :3]
     else:
         file_img_example = os.path.join(path, temp[0])
         img_example = cv2.imread(file_img_example)
+        # Handle RGBA example images
+        if len(img_example.shape) == 3 and img_example.shape[2] == 4:
+            img_example = img_example[:, :, :3]
         mask = np.ones(img_example.shape, 
                        dtype=np.uint8)
     
@@ -150,8 +175,18 @@ def load_imgs_mask(path,
         file1 = os.path.join(path, file)
         img = cv2.imread(file1, 
                          cv2.IMREAD_UNCHANGED)
+        
+        # Handle different image formats
         if len(img.shape)==2:
+            # Grayscale image
             img = np.expand_dims(img, -1)
+            img = np.concatenate((img, img, img),
+                                 axis=-1)
+        elif len(img.shape)==3 and img.shape[2]==4:
+            # RGBA image - remove alpha channel
+            img = img[:, :, :3]
+        elif len(img.shape)==3 and img.shape[2]==1:
+            # Single channel image
             img = np.concatenate((img, img, img),
                                  axis=-1)
         
