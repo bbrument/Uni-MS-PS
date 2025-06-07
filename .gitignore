@@ -2,5 +2,9 @@ weights/*.pth
 env.yml
 *log
 __pycache__/
+.vscode/
+data/
+exp/
+inference/
 
 *.sh
