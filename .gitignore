@@ -3,4 +3,4 @@ env.yml
 *log
 __pycache__/
 
-run_os.sh
+*.sh
